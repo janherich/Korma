@@ -22,6 +22,10 @@
   (has-one address)
   (has-many email))
 
+(defentity roles)
+(defentity employees
+  (has-many-to-many roles))
+
 (defentity users-alias
   (table :users :u))
 
@@ -281,6 +285,14 @@
 
     (is (= result
            "dry run :: SELECT \"blah\".* FROM \"blah\" :: []\ndry run :: SELECT \"users\".* FROM \"users\" WHERE (\"users\".\"cool_id\" = ?) :: [1]\n"))))
+
+(deftest many-to-many
+  (let [result (with-out-str
+                 (dry-run
+                   (select employees (with roles))))]
+    
+    (is (= result
+           "dry run :: SELECT \"employees\".* FROM \"employees\" :: []\ndry run :: SELECT \"roles\".* FROM \"roles\" INNER JOIN \"employees2roles\" ON \"roles\".\"id\" = \"employees2roles\".\"roles_id\" WHERE (\"employees2roles\".\"employees_id\" = ?) :: [1]\n"))))
 
 (deftest subselects
   (are [query result] (= query result)
