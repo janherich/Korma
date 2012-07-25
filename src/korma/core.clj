@@ -517,7 +517,7 @@
   mapping table, a key :sub-fk to explicitly set the sub-entity foreign key in mapping
   table and finally also a key :map-table to explicity set the name of mapping table.
 
-  (has-many-many users email {:fk :userID :sub-fk :emailID :map-table 'users2emails'})"
+  (has-many-many users email {:fk :userID :sub-fk :emailID :map-table \"users2emails\"})"
   [ent sub-ent & [opts]]
   `(rel ~ent (var ~sub-ent) :has-many-to-many ~opts))
 
@@ -529,7 +529,7 @@
   mapping table, a key :sub-fk to explicitly set the sub-entity foreign key in mapping
   table and finally also a key :map-table to explicity set the name of mapping table.
 
-  (has-many-many users email {:fk :userID :sub-fk :emailID :map-table 'emails2users'})"
+  (has-many-many users email {:fk :userID :sub-fk :emailID :map-table \"emails2users\"})"
   [ent sub-ent & [opts]]
   `(rel ~ent (var ~sub-ent) :belongs-to-many-to-many ~opts))
 
