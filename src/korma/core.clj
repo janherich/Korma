@@ -1,6 +1,7 @@
 (ns korma.core
   "Core querying and entity functions"
-  (:require [korma.sql.engine :as eng]
+  (:require [clojure.string :as string]
+            [korma.sql.engine :as eng]
             [korma.sql.fns :as sfns]
             [korma.sql.utils :as utils]
             [clojure.set :as set]
@@ -9,6 +10,7 @@
 
 (def ^{:dynamic true} *exec-mode* false)
 (declare get-rel)
+(declare add-deletion-of-relations)
 
 ;;*****************************************************
 ;; Query types
@@ -39,9 +41,12 @@
   [ent]
   (if (:type ent)
     ent
-    (let [q (empty-query ent)]
+    (let [q (empty-query ent)
+          fields (if (or (not (map? ent)) (empty? (:fields ent)))
+                   [::*]
+                   (conj (:fields ent) (:pk ent)))]
       (merge q {:type :select
-                :fields [::*]
+                :fields fields
                 :from [(:ent q)]
                 :modifiers []
                 :joins []
@@ -218,14 +223,8 @@
   "Add a join clause to a select query, specifying the table name to join and the predicate
   to join on.
   
-  (join query addresses)
   (join query addresses (= :addres.users_id :users.id))
   (join query :right addresses (= :address.users_id :users.id))"
-  ([query ent]
-   `(let [q# ~query
-          e# ~ent
-          rel# (get-rel (:ent q#) e#)]
-      (join* q# :left e# (sfns/pred-= (:pk rel#) (:fk rel#)))))
   ([query table clause]
    `(join* ~query :left ~table (eng/pred-map ~(eng/parse-where clause))))
   ([query type table clause]
@@ -418,126 +417,13 @@
    :fields []
    :rel {}})
 
-(defn create-relation
-  "Create a relation map describing how two entities are related."
-  [ent sub-ent type opts]
-  (cond 
-    (#{:has-many-to-many :belongs-to-many-to-many} type) 
-          (let [d-fk (keyword (str (:table ent) "_id"))
-                d-sub-fk (keyword (str (:table sub-ent) "_id"))
-                d-map-table (condp = type
-                          :has-many-to-many (str (:table ent) "2" (:table sub-ent))
-                          :belongs-to-many-to-many (str (:table sub-ent) "2" (:table ent)))
-                opts (merge {:fk d-fk
-                             :sub-fk d-sub-fk
-                             :map-table d-map-table}
-                            opts)
-                [pk fk sub-pk sub-fk] [(raw (eng/prefix ent (:pk ent)))
-                                       (raw (eng/prefix (:map-table opts) (:fk opts)))
-                                       (raw (eng/prefix sub-ent (:pk ent)))
-                                       (raw (eng/prefix (:map-table opts) (:sub-fk opts)))]]
-            {:table (:table sub-ent)
-             :alias (:alias sub-ent)
-             :rel-type type
-             :pk pk
-             :sub-pk sub-pk
-             :fk fk
-             :sub-fk sub-fk
-             :map-table (:map-table opts)})
-    :else (let [[pk fk foreign-ent] (condp = type
-				                  :has-one [(raw (eng/prefix ent (:pk ent)))
-				                            (raw (eng/prefix sub-ent (keyword (str (:table ent) "_id"))))
-				                            sub-ent]
-				                  :belongs-to [(raw (eng/prefix sub-ent (:pk sub-ent)))
-				                               (raw (eng/prefix ent (keyword (str (:table sub-ent) "_id"))))
-				                               ent]
-				                  :has-many [(raw (eng/prefix ent (:pk ent)))
-				                             (raw (eng/prefix sub-ent (keyword (str (:table ent) "_id"))))
-				                             sub-ent])
-				        opts (when (:fk opts)
-				               {:fk (raw (eng/prefix foreign-ent (:fk opts)))})]
-				    (merge {:table (:table sub-ent)
-				            :alias (:alias sub-ent)
-				            :rel-type type
-				            :pk pk
-				            :fk fk}
-				           opts))))
-
-(defn rel
-  [ent sub-ent type opts]
-  (let [var-name (-> sub-ent meta :name)
-        cur-ns *ns*]
-    (assoc-in ent [:rel (name var-name)]
-              (delay
-                (let [resolved (ns-resolve cur-ns var-name)
-                      sub-ent (when resolved
-                                (deref sub-ent))]
-                  (when-not (map? sub-ent)
-                    (throw (Exception. (format "Entity used in relationship does not exist: %s" (name var-name)))))
-                  (create-relation ent sub-ent type opts))))))
-
-(defn get-rel [ent sub-ent]
-  (let [sub-name (if (map? sub-ent)
-                   (:name sub-ent)
-                   sub-ent)]
-    (force (get-in ent [:rel sub-name]))))
-
-(defmacro has-one
-  "Add a has-one relationship for the given entity. It is assumed that the foreign key
-  is on the sub-entity with the format table_id: user.id = address.user_id
-  Opts can include a key for :fk to explicitly set the foreign key.
-
-  (has-one users address {:fk :addressID})"
-  [ent sub-ent & [opts]]
-  `(rel ~ent (var ~sub-ent) :has-one ~opts))
-
-(defmacro belongs-to
-  "Add a belongs-to relationship for the given entity. It is assumed that the foreign key
-  is on the current entity with the format sub-ent-table_id: email.user_id = user.id.
-  Opts can include a key for :fk to explicitly set the foreign key.
-
-  (belongs-to users email {:fk :emailID})"
-  [ent sub-ent & [opts]]
-  `(rel ~ent (var ~sub-ent) :belongs-to ~opts))
-
-(defmacro has-many
-  "Add a has-many relation for the given entity. It is assumed that the foreign key
-  is on the sub-entity with the format table_id: user.id = email.user_id
-  Opts can include a key for :fk to explicitly set the foreign key.
-  
-  (has-many users email {:fk :emailID})"
-  [ent sub-ent & [opts]]
-  `(rel ~ent (var ~sub-ent) :has-many ~opts))
-
-(defmacro has-many-to-many
-  "Adds a many-many relation for given entity. It is assumed that mapping table
-  exists between entity and sub-entity with name entity2sub-entity: user2email
-  and this table has columns table_id and sub-ent-table_id: user_id, email_id.
-  Opts can include a key for :fk to explicitly set the entity foreign key in 
-  mapping table, a key :sub-fk to explicitly set the sub-entity foreign key in mapping
-  table and finally also a key :map-table to explicity set the name of mapping table.
-
-  (has-many-many users email {:fk :userID :sub-fk :emailID :map-table \"users2emails\"})"
-  [ent sub-ent & [opts]]
-  `(rel ~ent (var ~sub-ent) :has-many-to-many ~opts))
-
-(defmacro belongs-to-many-to-many
-  "Adds a many-many relation for given entity. It is assumed that mapping table
-  exists between entity and sub-entity with name sub-entity2entity: email2user
-  and this table has columns table_id and sub-ent-table_id: user_id, email_id.
-  Opts can include a key for :fk to explicitly set the entity foreign key in 
-  mapping table, a key :sub-fk to explicitly set the sub-entity foreign key in mapping
-  table and finally also a key :map-table to explicity set the name of mapping table.
-
-  (has-many-many users email {:fk :userID :sub-fk :emailID :map-table \"emails2users\"})"
-  [ent sub-ent & [opts]]
-  `(rel ~ent (var ~sub-ent) :belongs-to-many-to-many ~opts))
-
 (defn entity-fields
   "Set the fields to be retrieved by default in select queries for the
   entity."
   [ent & fields]
-  (update-in ent [:fields] concat (map #(eng/prefix ent %) fields)))
+  (update-in ent [:fields] concat fields))
+             ;(map #(eng/prefix ent %) 
+             ;     fields)))
 
 (defn table
   "Set the name of the table and an optional alias to be used for the entity. 
@@ -583,73 +469,296 @@
      (def ~ent e#)))
 
 ;;*****************************************************
+;; Relation switch
+;;*****************************************************
+
+(defn relation-switch 
+  "Implements switch for relation types, takes function to be called for each relation type
+   and variable number of arguments after. Each function will be called with relation query,
+   sub-entity and optional other arguments if those are provided."
+  [query sub-ent rel-type has-one-f has-many-f has-many-to-many-f belongs-to-many-to-many-f & args]
+    (condp = rel-type
+      :has-one (apply has-one-f query sub-ent args) 
+      :has-many (apply has-many-f query sub-ent args)
+      :has-many-to-many (apply has-many-to-many-f query sub-ent args)
+      :belongs-to-many-to-many (apply belongs-to-many-to-many-f query sub-ent args)
+      :else (throw (Exception. (str "Unknown type of relaton: " rel-type " defined for table: " (:table sub-ent))))))
+
+;;*****************************************************
+;; Create relations
+;;*****************************************************
+
+(defn create-many-to-many-relation
+  "Create a relation map for many-to-many relations"
+  [ent sub-ent type opts]
+  (let [d-fk (keyword (str (:table ent) "_id"))
+      d-sub-fk (keyword (str (:table sub-ent) "_id"))
+      d-map-table (condp = type
+                :has-many-to-many (str (:table ent) "2" (:table sub-ent))
+                :belongs-to-many-to-many (str (:table sub-ent) "2" (:table ent)))
+      opts (merge {:fk d-fk
+                   :sub-fk d-sub-fk
+                   :map-table d-map-table}
+                  opts)
+      [pk fk sub-pk sub-fk] [(:pk ent)
+                             (:fk opts)
+                             (:pk ent)
+                             (:sub-fk opts)]]
+            {:table (:table sub-ent)
+             :alias (:alias sub-ent)
+             :rel-type type
+             :pk pk
+             :sub-pk sub-pk
+             :fk fk
+             :sub-fk sub-fk
+             :map-table (:map-table opts)}))
+
+(defn create-has-many-relation
+  "Create a relation map for has-one or has-many relation"
+  [ent sub-ent type opts]
+  (let [d-fk (keyword (str (:table ent) "_id"))
+        opts (merge {:fk d-fk} opts)
+       [pk fk] [(:pk ent)
+                (:fk opts)]]
+			  {:table (:table sub-ent)
+			   :alias (:alias sub-ent)
+			   :rel-type type
+			   :pk pk
+			   :fk fk}))
+
+(defn create-has-one-relation
+  "Create a relation map for belongs-to relation"
+  [ent sub-ent type opts]
+  (let [d-fk (keyword (str (:table sub-ent) "_id"))
+      opts (merge {:fk d-fk} opts)
+      [pk fk] [(:pk sub-ent)
+               (:fk opts)]]
+		   {:table (:table sub-ent)
+		    :alias (:alias sub-ent)
+		    :rel-type type
+		    :pk pk
+		    :fk fk}))
+
+(defn rel
+  [ent sub-ent type opts]
+  (let [var-name (-> sub-ent meta :name)
+        cur-ns *ns*]
+    (assoc-in ent [:rel (keyword (name var-name))]
+              (delay
+                (let [resolved (ns-resolve cur-ns var-name)
+                      sub-ent (when resolved
+                                (deref sub-ent))]
+                  (when-not (map? sub-ent)
+                    (throw (Exception. (format "Entity used in relationship does not exist: %s" (name var-name)))))
+                  (-> (relation-switch ent sub-ent type create-has-one-relation
+                                                        create-has-many-relation
+                                                        create-many-to-many-relation
+                                                        create-many-to-many-relation type opts) 
+                      (assoc :sub-ent sub-ent)))))))
+
+(defn get-rel [ent sub-ent]
+  (let [sub-name (cond
+                   (map? sub-ent) (keyword (:name sub-ent))
+                   (keyword? sub-ent) sub-ent
+                   :else (keyword sub-ent))]
+    (force (get-in ent [:rel sub-name]))))
+
+(defmacro has-one
+  "Add a belongs-to relationship for the given entity. It is assumed that the foreign key
+  is on the current entity with the format sub-ent-table_id: email.user_id = user.id.
+  Opts can include a key for :fk to explicitly set the foreign key.
+
+  (has-one users email {:fk :emailID})"
+  [ent sub-ent & [opts]]
+  `(rel ~ent (var ~sub-ent) :has-one ~opts))
+
+(defmacro has-many
+  "Add a has-many relation for the given entity. It is assumed that the foreign key
+  is on the sub-entity with the format table_id: user.id = email.user_id
+  Opts can include a key for :fk to explicitly set the foreign key.
+  
+  (has-many users email {:fk :emailID})"
+  [ent sub-ent & [opts]]
+  `(rel ~ent (var ~sub-ent) :has-many ~opts))
+
+(defmacro has-many-to-many
+  "Adds a many-many relation for given entity. It is assumed that mapping table
+  exists between entity and sub-entity with name entity2sub-entity: user2email
+  and this table has columns table_id and sub-ent-table_id: user_id, email_id.
+  Opts can include a key for :fk to explicitly set the entity foreign key in 
+  mapping table, a key :sub-fk to explicitly set the sub-entity foreign key in mapping
+  table and finally also a key :map-table to explicity set the name of mapping table.
+
+  (has-many-many users email {:fk :userID :sub-fk :emailID :map-table \"users2emails\"})"
+  [ent sub-ent & [opts]]
+  `(rel ~ent (var ~sub-ent) :has-many-to-many ~opts))
+
+(defmacro belongs-to-many-to-many
+  "Adds a many-many relation for given entity. It is assumed that mapping table
+  exists between entity and sub-entity with name sub-entity2entity: email2user
+  and this table has columns table_id and sub-ent-table_id: user_id, email_id.
+  Opts can include a key for :fk to explicitly set the entity foreign key in 
+  mapping table, a key :sub-fk to explicitly set the sub-entity foreign key in mapping
+  table and finally also a key :map-table to explicity set the name of mapping table.
+
+  (has-many-many users email {:fk :userID :sub-fk :emailID :map-table \"emails2users\"})"
+  [ent sub-ent & [opts]]
+  `(rel ~ent (var ~sub-ent) :belongs-to-many-to-many ~opts))
+
+;;*****************************************************
+;; Relation functions
+;;*****************************************************
+
+(defn- select-has-one [query sub-ent rel func]
+  (let [fk (:fk rel)
+        pk (raw (eng/prefix sub-ent (:pk rel)))
+        table (keyword (eng/table-alias sub-ent))]
+    (post-query (fields query fk) 
+        (partial map 
+                 #(dissoc (assoc % table
+                                 (first (select sub-ent
+                                                (func)
+                                                (where {pk (get % fk)})))) fk)))))
+
+(defn- select-has-many [query sub-ent rel func]
+  (let [pk (:pk rel)
+        fk (keyword (eng/prefix sub-ent (:fk rel)))
+        table (keyword (eng/table-alias sub-ent))]
+    (post-query query 
+                (partial map 
+                         #(assoc % table
+                                 (select sub-ent
+                                         (func)
+                                         (where {fk (get % pk)})))))))
+
+(defn- select-many-to-many [query sub-ent rel func]
+  (let [ent (:ent query)
+        map-table (:map-table rel)
+        pk (:pk rel)
+        fk (raw (eng/prefix map-table (:fk rel)))
+        sub-pk (raw (eng/prefix sub-ent (:sub-pk rel)))
+        sub-fk (raw (eng/prefix map-table (:sub-fk rel)))
+        table (keyword (eng/table-alias sub-ent))]
+    (post-query query 
+                (partial map 
+                         #(assoc % table
+                                 (select sub-ent
+                                         (join :inner map-table (= sub-pk sub-fk))
+                                         (func)
+                                         (where {fk (get % pk)})))))))
+
+(defn extract-id [result]
+  (first (vals result)))
+
+(defn- insert-one [query sub-ent rel]
+  (let [fk (:fk rel)
+        relations (get-in query [:relations (:table sub-ent)])]
+    (if (vector? relations)
+      (throw (Exception. (str "There must be only single value defined for relation of type "
+                              (:rel-type rel) " on related entity " (:table sub-ent))))
+      (update-in query [:values] (fn [values]
+                                   (map #(assoc % fk relations) values))))))
+
+(defn- insert-many [query sub-ent rel]
+  (let [fk (:fk rel)
+        pk (:pk rel)
+        table (keyword (eng/table-alias sub-ent))
+        relations (get-in query [:relations (:table sub-ent)])]
+    (if (vector? relations)
+      (post-query query
+                  (fn [result]
+                    (let [id (extract-id result)]
+                      (update sub-ent
+                            (set-fields {fk id})
+                            (where {pk ['in relations]})))))
+      (throw (Exception. (str "There must be vector of values defined for relation of type "
+                              (:rel-type rel) " on related entity " (:table sub-ent)))))))
+
+(defn- insert-many-to-many [query sub-ent rel]
+  (let [fk (:fk rel)
+        sub-fk (:sub-fk rel)
+        map-table (:map-table rel)
+        relations (get-in query [:relations (:table sub-ent)])]
+    (if (vector? relations)
+      (post-query query
+                  (fn [result] 
+                    (let [id (extract-id result)
+                          vals (into [] (map #(assoc (hash-map fk id) sub-fk %) relations))]
+                      (insert map-table
+                            (values vals)))))
+      (throw (Exception. (str "There must be vector of values defined for relation of type "
+                              (:rel-type rel) " on related entity " (:table sub-ent)))))))
+
+(defn- delete-many [query sub-ent rel]
+  (let [pk (:pk rel)
+        fk (:fk rel)
+        table (keyword (eng/table-alias sub-ent))]
+    (post-query query
+                (fn [result]
+                  (let [id (extract-id result)]
+                    (update sub-ent
+                          (set-fields {fk nil})
+                          (where {fk id})))))))
+
+(defn- delete-many-to-many [query sub-ent rel]
+  (let [pk (:pk rel)
+        fk (:fk rel)
+        sub-fk (:sub-fk rel)
+        map-table (:map-table rel)] 
+    (post-query query
+                (fn [result]
+                  (let [id (extract-id result)]
+                    (delete map-table
+                          (where {fk id})))))))
+
+(defn add-deletion-of-relations [query]
+  "Add post functions for deletion of all relations for given entity"
+  ((fn [query relations]
+     (if (first relations)
+       (let [rel (force (first relations))
+             sub-ent (:sub-ent rel)]
+         (recur (relation-switch query sub-ent (:rel-type rel) (fn [query _ _] query)
+                                                               delete-many
+                                                               delete-many-to-many
+                                                               delete-many-to-many rel) (rest relations)))
+       query)) query (vals (:rel (:ent query)))))
+
+(defn relations
+  "Add relations for insert and update clauses, relations must be map with vectors of primary keyes 
+   of related entities.
+
+  (relations query {:roles [1 2 3]})
+
+  Or in case of has-many and belongs-to relationships values of those map must be just single keys.
+
+  (relations query {users 1})"
+  [query relation-map]
+  (if (first relation-map)
+    (let [item (first relation-map)
+          rel (get-rel (:ent query) (key item))
+          sub-ent (:sub-ent rel)
+          relations (val item)
+          q (assoc-in query [:relations (:table sub-ent)] relations)]
+      (if (not rel)
+        (throw (Exception. (str "No relationship defined for table: " (:table sub-ent))))
+        (recur (relation-switch q sub-ent (:rel-type rel) insert-one 
+                                                          insert-many 
+                                                          insert-many-to-many
+                                                          insert-many-to-many rel) (rest relation-map))))
+    query))
+
+;;*****************************************************
 ;; With
 ;;*****************************************************
 
-(defn- force-prefix [ent fields]
-  (for [field fields]
-    (if (vector? field)
-      [(utils/generated (eng/prefix ent (first field))) (second field)]
-      (eng/prefix ent field))))
-
-(defn merge-part [query neue k]
-  (update-in query [k] #(if-let [vs (k neue)]
-                          (vec (concat % vs))
-                          %)))
-
-(defn- merge-query [query neue]
-  (let [merged (reduce #(merge-part % neue %2)
-                       query
-                       [:fields :group :order :where :params :joins :post-queries])]
-    (-> merged
-        (add-aliases (:aliases neue)))))
-
-(defn- sub-query [query sub-ent func]
-  (let [neue (select* sub-ent)
-        neue (bind-query neue (func neue))
-        neue (-> neue
-                 (update-in [:fields] #(force-prefix sub-ent %))
-                 (update-in [:order] #(force-prefix sub-ent %))
-                 (update-in [:group] #(force-prefix sub-ent %)))]
-    (merge-query query neue)))
-
-(defn- with-many [rel query ent func]
-  (let [fk (:fk rel)
-        pk (get-in query [:ent :pk])
-        table (keyword (eng/table-alias ent))]
-    (post-query query 
-                (partial map 
-                         #(assoc % table
-                                 (select ent
-                                         (func)
-                                         (where {fk (get % pk)})))))))
-
-(defn- with-many-to-many [rel query ent func]
-  (let [fk (:fk rel)
-        pk (get-in query [:ent :pk])
-        table (keyword (eng/table-alias ent))]
-    (post-query query 
-                (partial map 
-                         #(assoc % table
-                                 (select ent
-                                         (join :inner (:map-table rel) (= (:sub-pk rel) (:sub-fk rel)))
-                                         (func)
-                                         (where {fk (get % pk)})))))))
-
-(defn- with-direct [rel query ent func]
-  (let [table (if (:alias rel)
-                [(:table ent) (:alias ent)]
-                (:table ent))
-        query (join query table (= (:pk rel) (:fk rel)))]
-    (sub-query query ent func)))
-
 (defn with* [query sub-ent func]
   (let [rel (get-rel (:ent query) sub-ent)]
-    (cond
-      (not rel) (throw (Exception. (str "No relationship defined for table: " (:table sub-ent))))
-      (#{:has-one :belongs-to} (:rel-type rel)) (with-direct rel query sub-ent func)
-      (#{:has-many-to-many :belongs-to-many-to-many} (:rel-type rel)) (with-many-to-many rel query sub-ent func)
-      :else (with-many rel query sub-ent func))))
+    (if (not rel)
+      (throw (Exception. (str "No relationship defined for table: " (:table sub-ent))))
+      (relation-switch query sub-ent (:rel-type rel) select-has-one 
+                                                     select-has-many 
+                                                     select-many-to-many
+                                                     select-many-to-many rel func))))
 
 (defmacro with
   "Add a related entity to the given select query. If the entity has a relationship

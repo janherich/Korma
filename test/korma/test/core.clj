@@ -14,7 +14,7 @@
 (defentity users)
 (defentity state)
 (defentity address
-  (belongs-to state))
+  (has-one state))
 (defentity email)
 
 (defentity user2
@@ -28,6 +28,9 @@
 
 (defentity users-alias
   (table :users :u))
+
+(defentity user3
+  (entity-fields :username))
 
 (defentity blah (pk :cool) (has-many users {:fk :cool_id}))
 
@@ -47,6 +50,8 @@
     (are [query result] (= query result)
          (select users)
          "SELECT \"users\".* FROM \"users\""
+         (select user3)
+         "SELECT \"user3\".\"id\", \"user3\".\"username\" FROM \"user3\""
          (select users-alias)
          "SELECT \"u\".* FROM \"users\" \"u\""
          (select users
@@ -202,7 +207,7 @@
 (deftest join-ent-directly
   (sql-only
     (is (= (select user2
-                   (join address))
+                   (join address (= :users.id :address.users_id)))
            "SELECT \"users\".* FROM \"users\" LEFT JOIN \"address\" ON \"users\".\"id\" = \"address\".\"users_id\""))))
 
 (deftest new-with
