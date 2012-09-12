@@ -41,6 +41,7 @@
            (order :created)
            (limit 5)
            (offset 3)
+           (transform-where)
            (as-sql))
          "SELECT \"users\".\"id\", \"users\".\"username\" FROM \"users\" WHERE (\"users\".\"username\" = ?) ORDER BY \"users\".\"created\" ASC LIMIT 5 OFFSET 3")))
 
@@ -77,6 +78,7 @@
            (set-fields {:first "chris"
                         :last "granger"})
            (where {:id 3})
+           (transform-where)
            (as-sql))
          "UPDATE \"users\" SET \"first\" = ?, \"last\" = ? WHERE (\"users\".\"id\" = ?)")))
 
@@ -99,6 +101,7 @@
 (deftest delete-function
   (is (= (-> (delete* "users")
            (where {:id 3})
+           (transform-where)
            (as-sql))
          "DELETE FROM \"users\" WHERE (\"users\".\"id\" = ?)")))
 
@@ -166,11 +169,11 @@
              [{:id 1 :email [{:id 1}]}])))))
 
 (deftest with-one
-  (sql-only
-    (is (= (select user2
-                   (with address)
-                   (fields :address.state :name))
-           "SELECT \"address\".\"state\", \"users\".\"name\" FROM \"users\" LEFT JOIN \"address\" ON \"users\".\"id\" = \"address\".\"users_id\""))))
+  (let [result (with-out-str
+               (dry-run
+                 (select user2 (with address (fields :state)) (fields :name))))]
+    (is (= result
+           "dry run :: SELECT \"users\".\"address_id\", \"users\".\"name\" FROM \"users\" :: []\r\ndry run :: SELECT \"address\".\"state\" FROM \"address\" WHERE (\"address\".\"id\" IS NULL) :: []\r\n"))))           
 
 (deftest join-order
   (sql-only

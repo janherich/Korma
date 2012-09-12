@@ -193,10 +193,13 @@
   describing how the key is related to the value: (where query {:name [like \"chris\"})"
   [query form]
   `(let [q# ~query]
-     (where* q# 
-             (bind-query q#
-                         (eng/pred-map
-                           ~(eng/parse-where `~form))))))
+     (where* q# ~(eng/parse-where `~form))))
+
+  ;`(let [q# ~query]
+  ;   (where* q# 
+  ;           (bind-query q#
+  ;                       (eng/pred-map
+  ;                         ~(eng/parse-where `~form)))))
 
 (defn order
   "Add an ORDER BY clause to a select query. field should be a keyword of the field name, dir
@@ -367,10 +370,15 @@
         query))
     query))
 
+(defn transform-where
+  [query]
+  (update-in query [:where] (fn [clauses] (map (fn [clause] (eng/pred-map clause)) clauses))))
+
 (defn exec
   "Execute a query map and return the results."
   [query]
   (let [query (apply-prepares query)
+        query (transform-where query)
         query (bind-query query (eng/->sql query))
         sql (:sql-str query)
         params (:params query)]
@@ -647,17 +655,19 @@
                                          (func)
                                          (where {fk (get % pk)})))))))
 
-(defn extract-id [result]
+(defn- extract-id [result]
   (first (vals result)))
 
-(defn- insert-one [query sub-ent rel]
+(defn- insert-update-one [key query sub-ent rel]
   (let [fk (:fk rel)
         relations (get-in query [:relations (:table sub-ent)])]
     (if (vector? relations)
       (throw (Exception. (str "There must be only single value defined for relation of type "
                               (:rel-type rel) " on related entity " (:table sub-ent))))
-      (update-in query [:values] (fn [values]
-                                   (map #(assoc % fk relations) values))))))
+      (update-in query [key] (fn [values]
+                                   (if (map? values)
+                                     (assoc values fk relations)
+                                     (map #(assoc % fk relations) values)))))))
 
 (defn- insert-many [query sub-ent rel]
   (let [fk (:fk rel)
@@ -689,31 +699,74 @@
       (throw (Exception. (str "There must be vector of values defined for relation of type "
                               (:rel-type rel) " on related entity " (:table sub-ent)))))))
 
+(defn- extract-id-from-where-condition [clauses id-key]
+  (if-let [id (id-key (first (filter #(contains? % id-key) clauses)))]
+    id
+    (throw (Exception. (str "No key " id-key " found in where clauses " clauses)))))
+
+(defn- update-many [query sub-ent rel]
+  (let [fk (:fk rel)
+        pk (:pk rel)
+        table (keyword (eng/table-alias sub-ent))
+        relations (get-in query [:relations (:table sub-ent)])
+        id (extract-id-from-where-condition (:where query) pk)]
+    (if (vector? relations)
+      (post-query query
+                  (fn [_]
+                    (update sub-ent
+                          (set-fields {fk nil})
+                          (where {fk id}))
+                    (when (seq relations)
+                      (update sub-ent
+                            (set-fields {fk id})
+                            (where {pk ['in relations]})))))
+      (throw (Exception. (str "There must be vector of values defined for relation of type "
+                              (:rel-type rel) " on related entity " (:table sub-ent)))))))
+
+(defn- update-many-to-many [query sub-ent rel]
+  (let [pk (:pk rel)
+        fk (:fk rel)
+        sub-fk (:sub-fk rel)
+        map-table (:map-table rel)
+        relations (get-in query [:relations (:table sub-ent)])
+        id (extract-id-from-where-condition (:where query) pk)
+        vals (into [] (map #(assoc (hash-map fk id) sub-fk %) relations))]
+    (if (vector? relations)
+      (post-query query
+                  (fn [_]
+                    (delete map-table
+                          (where {fk id}))
+                    (when (seq vals)
+                      (insert map-table
+                            (values vals)))))
+      (throw (Exception. (str "There must be vector of values defined for relation of type "
+                              (:rel-type rel) " on related entity " (:table sub-ent)))))))
+
 (defn- delete-many [query sub-ent rel]
   (let [pk (:pk rel)
         fk (:fk rel)
-        table (keyword (eng/table-alias sub-ent))]
+        table (keyword (eng/table-alias sub-ent))
+        id (extract-id-from-where-condition (:where query) pk)]
     (post-query query
-                (fn [result]
-                  (let [id (extract-id result)]
-                    (update sub-ent
-                          (set-fields {fk nil})
-                          (where {fk id})))))))
+                (fn [_]
+                  (update sub-ent
+                        (set-fields {fk nil})
+                        (where {fk id}))))))
 
 (defn- delete-many-to-many [query sub-ent rel]
   (let [pk (:pk rel)
         fk (:fk rel)
         sub-fk (:sub-fk rel)
-        map-table (:map-table rel)] 
+        map-table (:map-table rel)
+        id (extract-id-from-where-condition (:where query) pk)] 
     (post-query query
-                (fn [result]
-                  (let [id (extract-id result)]
-                    (delete map-table
-                          (where {fk id})))))))
+                (fn [_]
+                  (delete map-table
+                        (where {fk id}))))))
 
-(defn add-deletion-of-relations [query]
+(defn add-deletion-of-relations [q]
   "Add post functions for deletion of all relations for given entity"
-  ((fn [query relations]
+  (loop [query q relations (vals (:rel (:ent query)))]
      (if (first relations)
        (let [rel (force (first relations))
              sub-ent (:sub-ent rel)]
@@ -721,7 +774,7 @@
                                                                delete-many
                                                                delete-many-to-many
                                                                delete-many-to-many rel) (rest relations)))
-       query)) query (vals (:rel (:ent query)))))
+       query)))
 
 (defn relations
   "Add relations for insert and update clauses, relations must be map with vectors of primary keyes 
@@ -741,10 +794,16 @@
           q (assoc-in query [:relations (:table sub-ent)] relations)]
       (if (not rel)
         (throw (Exception. (str "No relationship defined for table: " (:table sub-ent))))
-        (recur (relation-switch q sub-ent (:rel-type rel) insert-one 
-                                                          insert-many 
-                                                          insert-many-to-many
-                                                          insert-many-to-many rel) (rest relation-map))))
+        (condp = (:type query)
+          :insert (recur (relation-switch q sub-ent (:rel-type rel) (partial insert-update-one :values) 
+                                                                    insert-many 
+                                                                    insert-many-to-many
+                                                                    insert-many-to-many rel) (rest relation-map))
+          :update (recur (relation-switch q sub-ent (:rel-type rel) (partial insert-update-one :set-fields) 
+                                                                    update-many 
+                                                                    update-many-to-many
+                                                                    update-many-to-many rel) (rest relation-map))
+          :else (throw (Exception. (str "Function relations is not allowed for " (:type query) " type queries."))))))
     query))
 
 ;;*****************************************************
