@@ -195,12 +195,6 @@
   `(let [q# ~query]
      (where* q# ~(eng/parse-where `~form))))
 
-  ;`(let [q# ~query]
-  ;   (where* q# 
-  ;           (bind-query q#
-  ;                       (eng/pred-map
-  ;                         ~(eng/parse-where `~form)))))
-
 (defn order
   "Add an ORDER BY clause to a select query. field should be a keyword of the field name, dir
   is ASC by default.
