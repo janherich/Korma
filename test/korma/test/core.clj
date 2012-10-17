@@ -45,6 +45,32 @@
            (as-sql))
          "SELECT \"users\".\"id\", \"users\".\"username\" FROM \"users\" WHERE (\"users\".\"username\" = ?) ORDER BY \"users\".\"created\" ASC LIMIT 5 OFFSET 3")))
 
+(deftest select-where-one-relation
+  (is (= (-> (select* user2)
+           (fields :id :username)
+           (where {:username "chris"})
+           (where-relations {:address 1})
+           (transform-where)
+           (as-sql))
+         "SELECT \"users\".\"id\", \"users\".\"username\" FROM \"users\" WHERE (\"users\".\"username\" = ?) AND (\"users\".\"address_id\" = ?)")))
+
+(deftest select-where-many-relation
+  (is (= (-> (select* user2)
+           (fields :id :username)
+           (where {:username "chris"})
+           (where-relations {:email 1})
+           (transform-where)
+           (as-sql))
+         "SELECT \"users\".\"id\", \"users\".\"username\" FROM \"users\" INNER JOIN \"email\" ON \"users\".\"id\" = \"email\".\"users_id\" WHERE (\"users\".\"username\" = ?) AND (\"email\".\"users_id\" = ?)")))
+
+(deftest select-where-many-to-many-relation
+  (is (= (-> (select* employees)
+           (fields :id :username)
+           (where {:username "chris"})
+           (where-relations {:roles 1})
+           (transform-where)
+           (as-sql))
+         "SELECT \"employees\".\"id\", \"employees\".\"username\" FROM \"employees\" INNER JOIN \"employees2roles\" ON \"employees\".\"id\" = \"employees2roles\".\"employees_id\" WHERE (\"employees\".\"username\" = ?) AND (\"employees2roles\".\"roles_id\" = ?)")))
 
 (deftest simple-selects
   (sql-only

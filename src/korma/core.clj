@@ -674,7 +674,8 @@
                     (let [id (extract-id result)]
                       (update sub-ent
                             (set-fields {fk id})
-                            (where {pk ['in relations]})))))
+                            (where {pk [in relations]}))
+                      id)))
       (throw (Exception. (str "There must be vector of values defined for relation of type "
                               (:rel-type rel) " on related entity " (:table sub-ent)))))))
 
@@ -689,7 +690,8 @@
                     (let [id (extract-id result)
                           vals (into [] (map #(assoc (hash-map fk id) sub-fk %) relations))]
                       (insert map-table
-                            (values vals)))))
+                            (values vals))
+                      id)))
       (throw (Exception. (str "There must be vector of values defined for relation of type "
                               (:rel-type rel) " on related entity " (:table sub-ent)))))))
 
@@ -771,14 +773,14 @@
        query)))
 
 (defn relations
-  "Add relations for insert and update clauses, relations must be map with vectors of primary keyes 
+  "Add relations for insert and update clauses, relations must be map with vectors of primary keys 
    of related entities.
 
   (relations query {:roles [1 2 3]})
 
   Or in case of has-many and belongs-to relationships values of those map must be just single keys.
 
-  (relations query {users 1})"
+  (relations query {:users 1})"
   [query relation-map]
   (if (first relation-map)
     (let [item (first relation-map)
@@ -798,6 +800,61 @@
                                                                     update-many-to-many
                                                                     update-many-to-many rel) (rest relation-map))
           :else (throw (Exception. (str "Function relations is not allowed for " (:type query) " type queries."))))))
+    query))
+
+;;*****************************************************
+;; Where-relations
+;;*****************************************************
+
+(defn- where-one [query sub-ent rel]
+  (let [fk (:fk rel)
+        relations (get-in query [:where-relations (:table sub-ent)])]
+    (if (vector? relations)
+      (where query {fk [in relations]})
+      (where query {fk relations}))))
+
+(defn- where-many [query sub-ent rel]
+  (let [ent (:ent query)
+        pk (raw (eng/prefix ent (:pk rel)))
+        fk (raw (eng/prefix sub-ent (:fk rel)))
+        sub-ent-table (:table sub-ent)
+        relations (get-in query [:where-relations (:table sub-ent)])
+        query (join query :inner sub-ent-table (= pk fk))]
+    (if (vector? relations)
+      (where query {fk [in relations]})
+      (where query {fk relations}))))
+
+(defn- where-many-to-many [query sub-ent rel]
+  (let [ent (:ent query)
+        map-table (:map-table rel)
+        pk (raw (eng/prefix ent (:pk rel)))
+        fk (raw (eng/prefix map-table (:fk rel)))
+        sub-pk (raw (eng/prefix sub-ent (:sub-pk rel)))
+        sub-fk (raw (eng/prefix map-table (:sub-fk rel)))
+        relations (get-in query [:where-relations (:table sub-ent)])
+        query (join query :inner map-table (= pk fk))]
+    (if (vector? relations)
+      (where query {sub-fk [in relations]})
+      (where query {sub-fk relations}))))
+
+(defn where-relations
+  "Add where conditions for relations to query, relations should be map with either single keys or vectors
+   representing entity identities, for example:
+
+   (where-relations query {:projects 1 :users [1 2 3]})"
+  [query relation-map]
+  (if (first relation-map)
+    (let [item (first relation-map)
+          rel (get-rel (:ent query) (key item))
+          sub-ent (:sub-ent rel)
+          relations (val item)
+          q (assoc-in query [:where-relations (:table sub-ent)] relations)]
+      (if (not rel)
+        (throw (Exception. (str "No relationship defined for table: " (:table sub-ent))))
+        (recur (relation-switch q sub-ent (:rel-type rel) where-one 
+                                                          where-many 
+                                                          where-many-to-many
+                                                          where-many-to-many rel) (rest relation-map))))
     query))
 
 ;;*****************************************************
