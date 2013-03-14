@@ -1,6 +1,6 @@
 (defproject korma "0.3.0-enhanced"
   :description "Tasty SQL for Clojure"
-  :url "http://github.com/ibdknox/korma"
+  :url "http://github.com/janherich/Korma"
   :dependencies [[org.clojure/clojure "1.5.0"]
                  [c3p0/c3p0 "0.9.1.2"]
                  [org.clojure/java.jdbc "0.2.3"]]
