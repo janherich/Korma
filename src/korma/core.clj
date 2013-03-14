@@ -154,6 +154,11 @@
       (assoc query :fields fs)
       (update-in query [:fields] concat fs))))
 
+(defn all-fields
+  "Select all fields from entity, useful also fro aggregate selects such as count"
+  [query]
+  (assoc query :fields [::*]))
+
 (defn fields
   "Set the fields to be selected in a query. Fields can either be a keyword
   or a vector of two keywords [field alias]:
@@ -484,7 +489,7 @@
       :has-many (apply has-many-f query sub-ent args)
       :has-many-to-many (apply has-many-to-many-f query sub-ent args)
       :belongs-to-many-to-many (apply belongs-to-many-to-many-f query sub-ent args)
-      :else (throw (Exception. (str "Unknown type of relaton: " rel-type " defined for table: " (:table sub-ent))))))
+      (throw (Exception. (str "Unknown type of relaton: " rel-type " defined for table: " (:table sub-ent))))))
 
 ;;*****************************************************
 ;; Create relations
@@ -627,11 +632,11 @@
         fk (keyword (eng/prefix sub-ent (:fk rel)))
         table (keyword (eng/table-alias sub-ent))]
     (post-query query 
-                (partial map 
-                         #(assoc % table
-                                 (select sub-ent
-                                         (func)
-                                         (where {fk (get % pk)})))))))
+        (partial map 
+                 #(assoc % table
+                         (select sub-ent
+                                 (func)
+                                 (where {fk (get % pk)})))))))
 
 (defn- select-many-to-many [query sub-ent rel func]
   (let [ent (:ent query)
@@ -642,12 +647,42 @@
         sub-fk (raw (eng/prefix map-table (:sub-fk rel)))
         table (keyword (eng/table-alias sub-ent))]
     (post-query query 
-                (partial map 
-                         #(assoc % table
-                                 (select sub-ent
-                                         (join :inner map-table (= sub-pk sub-fk))
-                                         (func)
-                                         (where {fk (get % pk)})))))))
+        (partial map 
+                 #(assoc % table
+                         (select sub-ent
+                                 (join :inner map-table (= sub-pk sub-fk))
+                                 (func)
+                                 (where {fk (get % pk)})))))))
+
+(defn- select-relations-has-one [query sub-ent rel]
+  (let [fk (:fk rel)
+        table (keyword (eng/table-alias sub-ent))]
+    (post-query (fields query fk) 
+        (partial map 
+                 #(dissoc (assoc % table (get % fk)) fk)))))
+
+(defn- select-relations-has-many [query sub-ent rel]
+  (let [pk (:pk rel)
+        pk-sub (:pk sub-ent)
+        fk (keyword (eng/prefix sub-ent (:fk rel)))
+        table (keyword (eng/table-alias sub-ent))]
+    (post-query query 
+        (partial map 
+                 #(assoc % table
+                         (map pk-sub (select sub-ent
+                                             (where {fk (get % pk)}))))))))
+
+(defn- select-relations-many-to-many [query sub-ent rel]
+  (let [map-table (:map-table rel)
+        pk (:pk rel)
+        fk (raw (eng/prefix map-table (:fk rel)))
+        sub-fk (:sub-fk rel)
+        table (keyword (eng/table-alias sub-ent))]
+    (post-query query 
+        (partial map 
+                 #(assoc % table
+                         (map sub-fk (select map-table
+                                             (where {fk (get % pk)}))))))))
 
 (defn- extract-id [result]
   (first (vals result)))
@@ -689,8 +724,9 @@
                   (fn [result] 
                     (let [id (extract-id result)
                           vals (into [] (map #(assoc (hash-map fk id) sub-fk %) relations))]
-                      (insert map-table
-                            (values vals))
+                      (when (seq vals)
+	                      (insert map-table
+	                            (values vals)))
                       id)))
       (throw (Exception. (str "There must be vector of values defined for relation of type "
                               (:rel-type rel) " on related entity " (:table sub-ent)))))))
@@ -799,8 +835,21 @@
                                                                     update-many 
                                                                     update-many-to-many
                                                                     update-many-to-many rel) (rest relation-map))
-          :else (throw (Exception. (str "Function relations is not allowed for " (:type query) " type queries."))))))
+          (throw (Exception. (str "Function relations is not allowed for " (:type query) " type queries."))))))
     query))
+
+(defn with-relations
+  "Select relations as links to other entities.
+
+  (with-relations roles)"
+  [query sub-ent]
+  (let [rel (get-rel (:ent query) sub-ent)]
+    (if (not rel)
+      (throw (Exception. (str "No relationship defined for table: " (:table sub-ent))))
+      (relation-switch query sub-ent (:rel-type rel) select-relations-has-one 
+                                                     select-relations-has-many 
+                                                     select-relations-many-to-many
+                                                     select-relations-many-to-many rel))))
 
 ;;*****************************************************
 ;; Where-relations
@@ -809,9 +858,7 @@
 (defn- where-one [query sub-ent rel]
   (let [fk (:fk rel)
         relations (get-in query [:where-relations (:table sub-ent)])]
-    (if (vector? relations)
-      (where query {fk [in relations]})
-      (where query {fk relations}))))
+    (where query {fk relations})))
 
 (defn- where-many [query sub-ent rel]
   (let [ent (:ent query)
@@ -820,9 +867,7 @@
         sub-ent-table (:table sub-ent)
         relations (get-in query [:where-relations (:table sub-ent)])
         query (join query :inner sub-ent-table (= pk fk))]
-    (if (vector? relations)
-      (where query {fk [in relations]})
-      (where query {fk relations}))))
+    (where query {fk relations})))
 
 (defn- where-many-to-many [query sub-ent rel]
   (let [ent (:ent query)
@@ -833,9 +878,7 @@
         sub-fk (raw (eng/prefix map-table (:sub-fk rel)))
         relations (get-in query [:where-relations (:table sub-ent)])
         query (join query :inner map-table (= pk fk))]
-    (if (vector? relations)
-      (where query {sub-fk [in relations]})
-      (where query {sub-fk relations}))))
+    (where query {sub-fk relations})))
 
 (defn where-relations
   "Add where conditions for relations to query, relations should be map with either single keys or vectors
@@ -891,3 +934,12 @@
   `(with* ~query ~ent (fn [q#]
                         (-> q#
                             ~@body))))
+
+(defmacro count-entity
+  "Counts given entity, with any korma expressions to restrict query"
+  [ent & body]
+  `(let [query# (-> (select* ~ent)
+                  (all-fields)
+	                (aggregate (~'count :*) :cnt)
+                 ~@body)]
+     (:cnt (first (exec query#)))))
