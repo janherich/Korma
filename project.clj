@@ -1,4 +1,4 @@
-(defproject korma "0.3.0-enhanced"
+(defproject korma-enhanced "0.3.0"
   :description "Tasty SQL for Clojure"
   :url "http://github.com/janherich/Korma"
   :dependencies [[org.clojure/clojure "1.5.0"]
