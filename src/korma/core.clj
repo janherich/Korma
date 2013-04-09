@@ -690,7 +690,7 @@
 (defn- insert-update-one [key query sub-ent rel]
   (let [fk (:fk rel)
         relations (get-in query [:relations (:table sub-ent)])]
-    (if (vector? relations)
+    (if (coll? relations)
       (throw (Exception. (str "There must be only single value defined for relation of type "
                               (:rel-type rel) " on related entity " (:table sub-ent))))
       (update-in query [key] (fn [values]
@@ -703,15 +703,16 @@
         pk (:pk rel)
         table (keyword (eng/table-alias sub-ent))
         relations (get-in query [:relations (:table sub-ent)])]
-    (if (vector? relations)
-      (post-query query
-                  (fn [result]
-                    (let [id (extract-id result)]
-                      (update sub-ent
-                            (set-fields {fk id})
-                            (where {pk [in relations]}))
-                      id)))
-      (throw (Exception. (str "There must be vector of values defined for relation of type "
+    (if (coll? relations)
+      (let [rel-vector (into [] relations)]
+	      (post-query query
+	                  (fn [result]
+	                    (let [id (extract-id result)]
+	                      (update sub-ent
+	                            (set-fields {fk id})
+	                            (where {pk [in rel-vector]}))
+	                      id))))
+      (throw (Exception. (str "There must be a collection of values defined for relation of type "
                               (:rel-type rel) " on related entity " (:table sub-ent)))))))
 
 (defn- insert-many-to-many [query sub-ent rel]
@@ -719,7 +720,7 @@
         sub-fk (:sub-fk rel)
         map-table (:map-table rel)
         relations (get-in query [:relations (:table sub-ent)])]
-    (if (vector? relations)
+    (if (coll? relations)
       (post-query query
                   (fn [result] 
                     (let [id (extract-id result)
@@ -728,7 +729,7 @@
 	                      (insert map-table
 	                            (values vals)))
                       id)))
-      (throw (Exception. (str "There must be vector of values defined for relation of type "
+      (throw (Exception. (str "There must be a collection of values defined for relation of type "
                               (:rel-type rel) " on related entity " (:table sub-ent)))))))
 
 (defn- extract-id-from-where-condition [clauses id-key]
@@ -742,17 +743,18 @@
         table (keyword (eng/table-alias sub-ent))
         relations (get-in query [:relations (:table sub-ent)])
         id (extract-id-from-where-condition (:where query) pk)]
-    (if (vector? relations)
-      (post-query query
-                  (fn [_]
-                    (update sub-ent
-                          (set-fields {fk nil})
-                          (where {fk id}))
-                    (when (seq relations)
-                      (update sub-ent
-                            (set-fields {fk id})
-                            (where {pk ['in relations]})))))
-      (throw (Exception. (str "There must be vector of values defined for relation of type "
+    (if (coll? relations)
+      (let [rel-vector (into [] relations)]
+	      (post-query query
+	                  (fn [_]
+	                    (update sub-ent
+	                          (set-fields {fk nil})
+	                          (where {fk id}))
+	                    (when (seq rel-vector)
+	                      (update sub-ent
+	                            (set-fields {fk id})
+	                            (where {pk ['in rel-vector]}))))))
+      (throw (Exception. (str "There must be a collection of values defined for relation of type "
                               (:rel-type rel) " on related entity " (:table sub-ent)))))))
 
 (defn- update-many-to-many [query sub-ent rel]
@@ -763,7 +765,7 @@
         relations (get-in query [:relations (:table sub-ent)])
         id (extract-id-from-where-condition (:where query) pk)
         vals (into [] (map #(assoc (hash-map fk id) sub-fk %) relations))]
-    (if (vector? relations)
+    (if (coll? relations)
       (post-query query
                   (fn [_]
                     (delete map-table
@@ -771,7 +773,7 @@
                     (when (seq vals)
                       (insert map-table
                             (values vals)))))
-      (throw (Exception. (str "There must be vector of values defined for relation of type "
+      (throw (Exception. (str "There must be a collection of values defined for relation of type "
                               (:rel-type rel) " on related entity " (:table sub-ent)))))))
 
 (defn- delete-many [query sub-ent rel]

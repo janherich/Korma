@@ -273,15 +273,15 @@
                        (where (like :email "%@gmail.com"))))))
          "dry run :: SELECT \"users\".* FROM \"users\" :: []\ndry run :: SELECT \"email\".* FROM \"email\" WHERE \"email\".\"email\" LIKE ? AND (\"email\".\"users_id\" = ?) :: [%@gmail.com 1]\n")))
 
-(deftest modifiers
-  (sql-only
-    (are [query result] (= query result)
-         (-> (select* "users")
-           (fields :name)
-           (modifier "DISTINCT")))
-    "SELECT DISTINCT \"users\".\"name\" FROM \"users\""
-    (select user2 (modifier "TOP 5"))
-    "SELECT TOP 5 \"users\".* FROM \"users\""))
+;(deftest modifiers
+;  (sql-only
+;    (are [query result] (= query result)
+;         (-> (select* "users")
+;           (fields :name)
+;           (modifier "DISTINCT")))
+;    "SELECT DISTINCT \"users\".\"name\" FROM \"users\""
+;    (select user2 (modifier "TOP 5"))
+;    "SELECT TOP 5 \"users\".* FROM \"users\""))
 
 (deftest delimiters
   (set-delimiters "`")
